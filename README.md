@@ -2,9 +2,8 @@
 
 EC2-TAGS-CLONE
 
-Script que copia los tags y sus valores de una instancia origen a una destino. El script debe utilizarse con profiles y requieres tener aws cli instalado.
-Como output escupe los tags y el valor que se están escribiendo
+This script copy all tags and his values from an origin instance to a destination instance, excep the tag 'Name'. The script should be used with your aws cli credential files, so obviusly you have to have installed the aws cli. The ouput of the script should be the tags with his values.
 
 ```./ec2-tags-cloner.sh [profile] [id instancia origen] [id instancia destino]```
 
-Ejemplo: ```./ec2-tags-cloner.sh serunion i-039d5bcd4554213b6 i-0a77b6800ce1c6aea```
+Example: ```./ec2-tags-cloner.sh serunion i-039d5bcd4554213b6 i-0a77b6800ce1c6aea```
