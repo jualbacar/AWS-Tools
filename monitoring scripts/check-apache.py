@@ -1,0 +1,433 @@
+#!/usr/bin/python
+
+""" Fetch Apache stats via mod_status and send to Zabbix 
+By Paulson McIntyre
+Patches by: 
+Zach Bailey <znbailey@gmail.com>
+Dale Bewley <dale@bewley.net>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+
+import urllib2, base64
+from optparse import OptionParser
+import os
+import StringIO
+import csv
+import sys
+import logging, logging.handlers
+from subprocess import Popen, PIPE, STDOUT
+
+def setLogLevel(loglevel):
+    """
+    Setup logging.
+    """
+
+    numeric_loglevel = getattr(logging, loglevel.upper(), None)
+    if not isinstance(numeric_loglevel, int):
+        raise ValueError('Invalid log level: "%s"\n Try: "debug", "info", "warning", "critical".' % loglevel)
+
+    program = os.path.basename( __file__ )
+    logger = logging.getLogger( program )
+    logger.setLevel(numeric_loglevel)
+
+    log_handler = logging.handlers.SysLogHandler( address = '/dev/log' )
+    #log_handler = logging.StreamHandler(sys.stdout)
+    logger.addHandler( log_handler )
+
+    return logger
+
+def zbx_fail(err):
+    logger.critical("%s", err)
+    #print "ZBX_NOTSUPPORTED"
+    print "0"
+    sys.exit(1)
+
+def fetchURL(url, user = None, passwd = None):
+    """ Return the data from a URL """
+    
+    request = urllib2.Request(url)
+    
+    if user and passwd:
+        base64string = base64.encodestring('%s:%s' % (user, passwd)).replace('\n', '')
+        request.add_header("Authorization", "Basic %s" % base64string)
+
+    try:
+        conn = urllib2.urlopen(request)
+        data = conn.read()
+        conn.close()
+    except:
+        raise
+
+    return data
+
+def zabbix_sender(payload, agentconfig = None, zabbixserver = None, zabbixport = 10051, senderloc = '/usr/bin/zabbix_sender' ):
+    logger.debug('sendValues: %s' % payload)
+    sender_command = []
+    result = 0
+    err = ''
+
+    if not (os.path.exists(senderloc)) or not (os.access(senderloc, os.X_OK)):
+        logger.error("%s not exists or not executable" %(senderloc))
+        raise
+
+    else:
+        # must have a config file OR have hostname, and server name
+        if agentconfig is not None:
+            logger.debug('sending to server in agent config %s' % agentconfig)
+            sender_command = [ senderloc, '-vv', '--config', agentconfig, '--input-file', '-' ]
+        else:
+            if zabbixserver is not None:
+                logger.debug('sending to server %s:%s' % (zabbixserver, zabbixport))
+                sender_command = [ senderloc, '-vv', '--zabbix-server', zabbixserver, '--port', str(zabbixport), '--input-file', '-' ]
+            else:
+                logger.error('must specify agent configuration or server name to call zabbix_sender with')
+
+        try:
+            p = Popen(sender_command, stdout = PIPE, stdin = PIPE, stderr = PIPE)
+            out, err = p.communicate( input = payload )
+            ret = p.wait()
+            result = 1
+
+        except Exception, e:
+          err = "%s\nFailed to execute: '%s'" % (e, " ".join(sender_command))
+
+        finally:
+            if ret != 0:
+              raise Exception("error returned from %s! ret: %d, out: '%s', err: '%s'" % (sender_command[0], ret, out.strip('\n'), err.strip('\n')))
+
+    return result
+
+def clean(string, chars):
+    for i in chars:
+        string = string.replace(i, '')
+    return string
+
+def parse(data, version):
+    """ Parse the CSV file into a dict of data
+    """
+    mapping = {
+        "_":"Waiting for Connection",
+        "S":"Starting up",
+        "R":"Reading Request",
+        "W":"Sending Reply",
+        "K":"Keepalive (read)",
+        "D":"DNS Lookup",
+        "C":"Closing connection",
+        "L":"Logging",
+        "G":"Gracefully finishing",
+        "I":"Idle cleanup of worker",
+        ".":"Open slot with no current process",
+        }
+    # Handle post-2.4.13 status format
+    if version == '2.4.13':
+        # First remove server name on first line
+        data = data.splitlines(False)
+        data = data[1:]
+        # Then remove lines with dates (and more than : delimiter in it)
+        lines=[]
+        for l in data:
+            if l.startswith('Server Built'):
+                continue
+            if l.startswith('CurrentTime'):
+                continue
+            if l.startswith('RestartTime'):
+                continue
+	    if l.startswith('TLSSessionCacheStatus'):
+		continue
+	    if l.startswith('CacheType'):
+                continue
+            if l.startswith('CPUUser'):
+                continue
+            if l.startswith('CacheSubcaches'):
+                continue
+            if l.startswith('CacheCurrentEntries'):
+                continue
+            if l.startswith('Load1'):
+                continue
+            if l.startswith('ServerMPM'):
+                continue
+            if l.startswith('Load5'):
+                continue
+            if l.startswith('CacheIndexesPerSubcaches'):
+                continue
+            if l.startswith('Load15'):
+                continue
+            if l.startswith('CPUChildrenSystem'):
+                continue
+            if l.startswith('CacheSharedMemory'):
+                continue
+            if l.startswith('ServerUptimeSeconds'):
+                continue
+            if l.startswith('CacheStoreCount'):
+                continue
+            if l.startswith('CacheExpireCount'):
+                continue
+            if l.startswith('CacheReplaceCount'):
+                continue
+            if l.startswith('ParentServerConfigGeneration'):
+                continue
+            if l.startswith('CacheRetrieveMissCount'):
+                continue
+            if l.startswith('ParentServerMPMGeneration'):
+                continue
+            if l.startswith('CacheRetrieveHitCount'):
+                continue
+            if l.startswith('CPUChildrenUser'):
+                continue
+            if l.startswith('CacheTimeLeftOldestMax'):
+                continue
+            if l.startswith('CacheDiscardCount'):
+                continue
+            if l.startswith('CacheRemoveHitCount'):
+                continue
+            if l.startswith('CacheTimeLeftOldestMin'):
+                continue
+            if l.startswith('CPUSystem'):
+                continue
+            if l.startswith('ServerVersion'):
+                continue
+            if l.startswith('CacheTimeLeftOldestAvg'):
+                continue
+            if l.startswith('CacheRemoveMissCount'):
+                continue
+            if l.startswith('CacheIndexUsage'):
+                continue
+            if l.startswith('CacheUsage'):
+                continue
+            if l.startswith('ServerUptime'):
+                continue
+
+            lines.append(l)
+        data = "\n".join(lines)
+    # Clean out certain chars
+    replace = '() '
+    csvobj = csv.reader(StringIO.StringIO(data), delimiter = ":", skipinitialspace = True)
+     
+    ret = {}
+    
+    for (key, val) in csvobj:
+        if key == 'Scoreboard':
+	    
+            sb = {
+                "Waiting for Connection":0,
+                "Starting up":0,
+                "Reading Request":0,
+                "Sending Reply":0,
+                "Keepalive (read)":0,
+                "DNS Lookup":0,
+                "Closing connection":0,
+                "Logging":0,
+                "Gracefully finishing":0,
+                "Idle cleanup of worker":0,
+                "Open slot with no current process":0,
+                }
+            for i in val:
+                sb[mapping[i]] += 1
+            ret[key] = sb
+	    	
+
+        else:
+        	ret[key] = val
+	    
+
+    ret2 = {}
+    for (key, val) in ret.items():
+        if key == "Scoreboard":
+            for (key, val) in val.items():
+                ret2[clean(key, replace)] = val
+        else:
+            ret2[clean(key, replace)] = val
+            
+    return ret2
+
+def get_opts():
+    parser = OptionParser(
+                        usage = "%prog [-z <Zabbix hostname or IP>] [-o <Apache hostname or IP>]",
+                        version = "%prog $Revision: 173 $",
+                        prog = "ApacheStatsForZabbix",
+                        description = """This program gathers data from Apache's 
+built-in status page and sends it to 
+Zabbix. The data is sent via zabbix_sender. 
+Author: Paulson McIntyre (GpMidi)
+License: GPLv2
+                        """,
+                        )
+    parser.add_option(
+                      "-l",
+                      "--url",
+                      action = "store",
+                      type = "string",
+                      dest = "url",
+                      default = None,
+                      help = "Override the automatically generated URL with one of your own",
+                      )
+    parser.add_option(
+                      "-o",
+                      "--host",
+                      action = "store",
+                      type = "string",
+                      dest = "host",
+                      default = "localhost",
+                      help = "Host to connect to. [default: %default]",
+                      )
+    parser.add_option(
+                      "-p",
+                      "--port",
+                      action = "store",
+                      type = "int",
+                      dest = "port",
+                      default = 80,
+                      help = "Port to connect on. [default: %default]",
+                      )
+    parser.add_option(
+                      "-r",
+                      "--proto",
+                      action = "store",
+                      type = "string",
+                      dest = "proto",
+                      default = "http",
+                      help = "Protocol to connect on. Can be http or https. [default: %default]",
+                      )
+    parser.add_option(
+                      "-z",
+                      "--zabbixserver",
+                      action = "store",
+                      type = "string",
+                      dest = "zabbixserver",
+                      default = "localhost",
+                      )
+    parser.add_option(
+                      "-u",
+                      "--user",
+                      action = "store",
+                      type = "string",
+                      dest = "user",
+                      default = None,
+                      help = "HTTP authentication user to use when connection. [default: None]",
+                      )
+    parser.add_option(
+                      "-a",
+                      "--passwd",
+                      action = "store",
+                      type = "string",
+                      dest = "passwd",
+                      default = None,
+                      help = "HTTP authentication password to use when connecting. [default: None]",
+                      )
+    parser.add_option(
+                      "-s",
+                      "--sender",
+                      action = "store",
+                      type = "string",
+                      dest = "senderloc",
+                      default = "/usr/bin/zabbix_sender",
+                      help = "Location to the zabbix_sender executable. [default: %default]",
+                      )
+    parser.add_option(
+                      "-q",
+                      "--zabbixport",
+                      action = "store",
+                      type = "int",
+                      dest = "zabbixport",
+                      default = 10051,
+                      help = "Zabbix port to connect to. [default: %default]",
+                      )
+    parser.add_option(
+                      "-c",
+                      "--zabbixsource",
+                      action = "store",
+                      type = "string",
+                      dest = "zabbixsource",
+                      default = "localhost",
+                      help = "Zabbix host to use when sending values. [default: %default]",
+                      )
+    parser.add_option(
+                      "--config",
+                      action = "store",
+                      type = "string",
+                      dest = "agentconfig",
+                      default = "",
+                      help = "Zabbix agent config to derive Hostname and ServerActive from. [default: %default]",
+                      )
+    parser.add_option(
+                      "--status-version",
+                      action = "store",
+                      type = "choice",
+                      choices = ["default", "2.4.13"],
+                      dest = "statusvers",
+                      default = "default",
+                      help = "Version of the Apache status to parse. Must be `default' or `2.4.13' since status output changed with Apache 2.4.13. [default: %default]",
+                      )
+
+    (opts, args) = parser.parse_args()
+    if opts.url and (opts.port != 80 or opts.proto != "http"):
+        parser.error("Can't specify -u with  -p or -r")
+    if not opts.url:
+        opts.url = "%s://%s:%s/server-status?auto" % (opts.proto, opts.host, opts.port)
+
+    return opts, args
+
+def main():    
+    opts, args = get_opts()
+
+    result = 0
+
+    try:
+        server_status = fetchURL(opts.url, user = opts.user, passwd = opts.passwd)
+    except Exception as e:
+        zbx_fail('failed to read server-status: %s' % e)
+    
+    try:
+        data = parse( data = server_status, version = opts.statusvers )
+    except Exception as e:
+        zbx_fail('failed to parse server-status: %s' % e)
+
+    payload = ""
+
+    if opts.agentconfig:
+        # agent check; assume hostname from zabbix agent config
+        for key, val in data.items():
+            payload += "-\tapache[%s]\t%s\n" % (key, val)
+
+        try:
+            result = zabbix_sender(
+                payload     = payload, 
+                agentconfig = opts.agentconfig, 
+                senderloc   = opts.senderloc )
+        except Exception as e:
+            zbx_fail('failed to send parsed data: %s' % e)
+        else:
+            # return value for apache.status item
+            print result
+
+    else:
+        # cron or remote check; hostname may be distinct from host running the check
+        for key, val in data.items():
+            payload += "%s apache[%s] %s\n" % (opts.zabbixsource, key, val)
+
+        try:
+            result = zabbix_sender(
+                payload      = payload, 
+                zabbixserver = opts.zabbixserver, 
+                zabbixport   = opts.zabbixport, 
+                senderloc    = opts.senderloc )
+        except Exception as e:
+            zbx_fail('failed to send parsed data: %s' % e)
+
+if __name__ == "__main__":
+    loglevel = 'debug'
+    logger   = setLogLevel(loglevel)
+    main()
+
