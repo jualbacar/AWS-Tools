@@ -1,0 +1,14 @@
+[
+        {
+          "Key": "Environment",
+          "Value": "PRO"
+        },
+        {
+          "Key": "DevTeam",
+          "Value": "Backend"
+        },
+        {
+          "Key": "Application",
+          "Value": "XMPP"
+        }
+]
