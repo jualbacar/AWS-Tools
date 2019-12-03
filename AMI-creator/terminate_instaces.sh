@@ -7,5 +7,5 @@ for instance in $instances
 do  
     # Terminate
     echo "Terminating instance: $instance"
-    #aws ec2 terminate-instances --instance-ids $instance
+    aws ec2 terminate-instances --instance-ids $instance
 done
