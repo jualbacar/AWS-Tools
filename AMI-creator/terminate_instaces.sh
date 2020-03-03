@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# ATTENTION! this script deletes EC2 stuff!!!
+
 # Get the instances with tag 'Description = Retiring'
 instances=$(aws ec2 describe-instances --filters "Name=tag:Description,Values=Retiring" | jq -r .Reservations[].Instances[].InstanceId)
 
